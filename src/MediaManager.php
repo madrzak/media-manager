@@ -4,10 +4,12 @@ namespace Encore\Admin\Media;
 
 use Encore\Admin\Exception\Handler;
 use Encore\Admin\Extension;
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
-use League\Flysystem\Adapter\Local;
+//use League\Flysystem\Adapter\LocalFilesystemAdapter;
+use League\Flysystem\Local\LocalFilesystemAdapter;
 
 /**
  * Class MediaManager.
@@ -25,13 +27,6 @@ class MediaManager extends Extension
      * @var \Illuminate\Filesystem\FilesystemAdapter
      */
     protected $storage;
-
-    /**
-     * List of allowed extensions.
-     *
-     * @var string
-     */
-    protected $allowed = [];
 
     /**
      * @var array
@@ -57,10 +52,6 @@ class MediaManager extends Extension
     {
         $this->path = $path;
 
-        if (!empty(config('admin.extensions.media-manager.allowed_ext'))) {
-            $this->allowed = explode(',', config('admin.extensions.media-manager.allowed_ext'));
-        }
-
         $this->initStorage();
     }
 
@@ -70,12 +61,12 @@ class MediaManager extends Extension
 
         $this->storage = Storage::disk($disk);
 
-        if (!$this->storage->getDriver()->getAdapter() instanceof Local) {
+        if (!$this->storage->getAdapter() instanceof LocalFilesystemAdapter) {
             Handler::error('Error', '[laravel-admin-ext/media-manager] only works for local storage.');
         }
     }
 
-    public function ls()
+    public function ls(): array
     {
         if (!$this->exists()) {
             Handler::error('Error', "File or directory [$this->path] not exists");
@@ -88,10 +79,10 @@ class MediaManager extends Extension
         $directories = $this->storage->directories($this->path);
 
         return $this->formatDirectories($directories)
-                ->merge($this->formatFiles($files))
-                ->sort(function ($item) {
-                    return $item['name'];
-                })->all();
+            ->merge($this->formatFiles($files))
+            ->sort(function ($item) {
+                return $item['name'];
+            })->all();
     }
 
     /**
@@ -103,23 +94,12 @@ class MediaManager extends Extension
      */
     protected function getFullPath($path)
     {
-        $fullPath = $this->storage->getDriver()->getAdapter()->applyPathPrefix($path);
-        if (strstr($fullPath, '..')) {
-            throw new \Exception('Incorrect path');
-        }
-
-        return $fullPath;
+        return $this->storage->getDriver()->getAdapter()->applyPathPrefix($path);
     }
 
     public function download()
     {
-        $fullPath = $this->getFullPath($this->path);
-
-        if (File::isFile($fullPath)) {
-            return response()->download($fullPath);
-        }
-
-        return response('', 404);
+        $this->storage->download($this->path);
     }
 
     public function delete($path)
@@ -127,9 +107,9 @@ class MediaManager extends Extension
         $paths = is_array($path) ? $path : func_get_args();
 
         foreach ($paths as $path) {
-            $fullPath = $this->getFullPath($path);
+//            $fullPath = $this->getFullPath($path);
 
-            if (is_file($fullPath)) {
+            if ($this->storage->fileExists($path)) {
                 $this->storage->delete($path);
             } else {
                 $this->storage->deleteDirectory($path);
@@ -141,11 +121,6 @@ class MediaManager extends Extension
 
     public function move($new)
     {
-        $ext = pathinfo($new, PATHINFO_EXTENSION);
-        if ($this->allowed && !in_array($ext, $this->allowed)) {
-            throw new \Exception('File extension '.$ext.' is not allowed');
-        }
-
         return $this->storage->move($this->path, $new);
     }
 
@@ -158,10 +133,6 @@ class MediaManager extends Extension
     public function upload($files = [])
     {
         foreach ($files as $file) {
-            if ($this->allowed && !in_array($file->getClientOriginalExtension(), $this->allowed)) {
-                throw new \Exception('File extension '.$file->getClientOriginalExtension().' is not allowed');
-            }
-
             $this->storage->putFileAs($this->path, $file, $file->getClientOriginalName());
         }
 
@@ -177,9 +148,10 @@ class MediaManager extends Extension
 
     public function exists()
     {
-        $path = $this->getFullPath($this->path);
-
-        return file_exists($path);
+//        $path = $this->getFullPath($this->path);
+//
+//        return file_exists($path);
+        return $this->storage->exists($this->path);
     }
 
     /**
@@ -220,7 +192,7 @@ class MediaManager extends Extension
     {
         $url = route('media-index', ['path' => '__path__', 'view' => request('view')]);
 
-        $preview = "<a href=\"$url\"><span class=\"file-icon text-aqua\"><i class=\"fa fa-folder\"></i></span></a>";
+        $preview = "<a href=\"$url\"><span class=\"file-icon text-aqua\"><i class=\"far fa-folder\"></i></span></a>";
 
         $dirs = array_map(function ($dir) use ($preview) {
             return [
@@ -261,49 +233,50 @@ class MediaManager extends Extension
         return $navigation;
     }
 
-    public function getFilePreview($file)
+    public function getFilePreview($file): string
     {
         switch ($this->detectFileType($file)) {
             case 'image':
 
-                if ($this->storage->getDriver()->getConfig()->has('url')) {
+//                if ($this->storage->getDriver()->getConfig()->has('url')) {
+                if ($this->storage->getConfig()['url']) {
                     $url = $this->storage->url($file);
                     $preview = "<span class=\"file-icon has-img\"><img src=\"$url\" alt=\"Attachment\"></span>";
                 } else {
-                    $preview = '<span class="file-icon"><i class="fa fa-file-image-o"></i></span>';
+                    $preview = '<span class="file-icon"><i class="far fa-image"></i></span>';
                 }
                 break;
 
             case 'pdf':
-                $preview = '<span class="file-icon"><i class="fa fa-file-pdf-o"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file-pdf"></i></span>';
                 break;
 
             case 'zip':
-                $preview = '<span class="file-icon"><i class="fa fa-file-zip-o"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file-archive"></i></span>';
                 break;
 
             case 'word':
-                $preview = '<span class="file-icon"><i class="fa fa-file-word-o"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file-word"></i></span>';
                 break;
 
             case 'ppt':
-                $preview = '<span class="file-icon"><i class="fa fa-file-powerpoint-o"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file-powerpoint"></i></span>';
                 break;
 
             case 'xls':
-                $preview = '<span class="file-icon"><i class="fa fa-file-excel-o"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file-excel"></i></span>';
                 break;
 
             case 'txt':
-                $preview = '<span class="file-icon"><i class="fa fa-file-text-o"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file-text"></i></span>';
                 break;
 
             case 'code':
-                $preview = '<span class="file-icon"><i class="fa fa-code"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file-code"></i></span>';
                 break;
 
             default:
-                $preview = '<span class="file-icon"><i class="fa fa-file"></i></span>';
+                $preview = '<span class="file-icon"><i class="far fa-file"></i></span>';
         }
 
         return $preview;
@@ -324,7 +297,9 @@ class MediaManager extends Extension
 
     public function getFilesize($file)
     {
-        $bytes = filesize($this->getFullPath($file));
+//        $bytes = filesize($this->getFullPath($file));
+        $bytes = $this->storage->size($file);
+
 
         $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
 
@@ -337,7 +312,8 @@ class MediaManager extends Extension
 
     public function getFileChangeTime($file)
     {
-        $time = filectime($this->getFullPath($file));
+//        $time = filectime($this->getFullPath($file));
+        $time = $this->storage->lastModified($file);
 
         return date('Y-m-d H:i:s', $time);
     }
